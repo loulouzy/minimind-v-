@@ -209,6 +209,10 @@ def main():
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=640, type=int)
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1])
+    parser.add_argument('--vision_fusion_type', default='replace', type=str, choices=['replace', 'qformer_cross_attn'])
+    parser.add_argument('--qformer_num_queries', default=32, type=int)
+    parser.add_argument('--qformer_num_layers', default=2, type=int)
+    parser.add_argument('--text_cross_attn_every_n_layers', default=1, type=int)
     
     # GRPO 相关参数
     parser.add_argument("--num_generations", type=int, default=4, help="每个prompt生成的响应数量")
@@ -252,7 +256,11 @@ def main():
         hidden_size=args.hidden_size,
         num_hidden_layers=args.num_hidden_layers,
         max_seq_len=args.max_seq_len,
-        use_moe=bool(args.use_moe)
+        use_moe=bool(args.use_moe),
+        vision_fusion_type=args.vision_fusion_type,
+        qformer_num_queries=args.qformer_num_queries,
+        qformer_num_layers=args.qformer_num_layers,
+        text_cross_attn_every_n_layers=args.text_cross_attn_every_n_layers,
     )
 
     # ========== 2. 初始化模型 ==========

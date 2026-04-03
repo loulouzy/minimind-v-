@@ -14,7 +14,7 @@ from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer
-from model.model_vlm import MiniMindVLM, VLMConfig
+from model.model_vlm import MiniMindVLM, VLMConfig, get_vlm_arch_suffix
 from dataset.lm_dataset import VLMDataset
 from trainer.trainer_utils import get_lr, Logger, is_main_process, init_distributed_mode, setup_seed, init_vlm_model, vlm_checkpoint, SkipBatchSampler, vlm_collate_fn
 
@@ -128,10 +128,8 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
             model.eval()
 
             # 如果用了 MoE，则给文件名加上 _moe 后缀
-            moe_suffix = '_moe' if vlm_config.use_moe else ''
-
-            # 构造权重保存路径
-            ckp = f'{args.save_dir}/{args.save_weight}_{vlm_config.hidden_size}{moe_suffix}.pth'
+            arch_suffix = get_vlm_arch_suffix(vlm_config)
+            ckp = f'{args.save_dir}/{args.save_weight}_{vlm_config.hidden_size}{arch_suffix}.pth'
 
             # 如果模型被 DDP 包装，取出原始模型
             raw_model = model.module if isinstance(model, DistributedDataParallel) else model
@@ -195,6 +193,10 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=360, type=int, help="训练的最大截断长度")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
+    parser.add_argument('--vision_fusion_type', default='replace', type=str, choices=['replace', 'qformer_cross_attn'], help="视觉融合方式")
+    parser.add_argument('--qformer_num_queries', default=32, type=int, help="Q-Former query 数量")
+    parser.add_argument('--qformer_num_layers', default=2, type=int, help="Q-Former 层数")
+    parser.add_argument('--text_cross_attn_every_n_layers', default=1, type=int, help="每隔多少层插入一次 text cross-attention")
     parser.add_argument("--data_path", type=str, default="../dataset/pretrain_i2t.parquet", help="训练数据路径")
     parser.add_argument('--from_weight', default='llm', type=str, help="基于哪个权重训练，为none则不基于任何权重训练")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
@@ -211,7 +213,16 @@ if __name__ == "__main__":
     
     # ========== 2. 配置目录、模型参数、检查ckp ==========
     os.makedirs(args.save_dir, exist_ok=True)
-    vlm_config = VLMConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, max_seq_len=args.max_seq_len, use_moe=bool(args.use_moe))
+    vlm_config = VLMConfig(
+        hidden_size=args.hidden_size,
+        num_hidden_layers=args.num_hidden_layers,
+        max_seq_len=args.max_seq_len,
+        use_moe=bool(args.use_moe),
+        vision_fusion_type=args.vision_fusion_type,
+        qformer_num_queries=args.qformer_num_queries,
+        qformer_num_layers=args.qformer_num_layers,
+        text_cross_attn_every_n_layers=args.text_cross_attn_every_n_layers,
+    )
     ckp_data = vlm_checkpoint(vlm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
     
     # ========== 3. 设置混合精度 ==========

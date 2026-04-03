@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 import warnings
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaConfig, LlamaForCausalLM
-from model.model_vlm import MiniMindVLM, VLMConfig
+from model.model_vlm import MiniMindVLM, VLMConfig, get_vlm_arch_suffix
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -35,7 +35,7 @@ def convert_transformers2torch(transformers_path, torch_path):
 
 
 if __name__ == '__main__':
-    lm_config = VLMConfig(hidden_size=768, num_hidden_layers=8, max_seq_len=8192, use_moe=False)
-    torch_path = f"../out/sft_vlm_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
+    lm_config = VLMConfig(hidden_size=768, num_hidden_layers=8, max_seq_len=8192, use_moe=False, vision_fusion_type='replace')
+    torch_path = f"../out/sft_vlm_{lm_config.hidden_size}{get_vlm_arch_suffix(lm_config)}.pth"
     transformers_path = '../minimind-3v'
     convert_torch2transformers_minimind(torch_path, transformers_path)

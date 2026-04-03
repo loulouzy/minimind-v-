@@ -122,6 +122,10 @@ def main():
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="LLM Transformer 层数")
     parser.add_argument('--max_seq_len', default=360, type=int, help="训练的最大序列长度（包含图像 token）")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用 MoE 架构")
+    parser.add_argument('--vision_fusion_type', default='replace', type=str, choices=['replace', 'qformer_cross_attn'], help="视觉融合方式")
+    parser.add_argument('--qformer_num_queries', default=32, type=int, help="Q-Former query 数量")
+    parser.add_argument('--qformer_num_layers', default=2, type=int, help="Q-Former 层数")
+    parser.add_argument('--text_cross_attn_every_n_layers', default=1, type=int, help="每隔多少层插入一次 text cross-attention")
     
     # ---------- 训练超参数 ----------
     parser.add_argument("--epochs", type=int, default=4, help="训练轮数")
@@ -163,7 +167,11 @@ def main():
         hidden_size=args.hidden_size,
         num_hidden_layers=args.num_hidden_layers,
         max_seq_len=args.max_seq_len,
-        use_moe=bool(args.use_moe)
+        use_moe=bool(args.use_moe),
+        vision_fusion_type=args.vision_fusion_type,
+        qformer_num_queries=args.qformer_num_queries,
+        qformer_num_layers=args.qformer_num_layers,
+        text_cross_attn_every_n_layers=args.text_cross_attn_every_n_layers,
     )
 
     # 第 3 部分：设置混合精度训练

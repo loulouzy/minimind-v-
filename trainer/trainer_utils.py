@@ -13,7 +13,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import Sampler
 from transformers import AutoTokenizer
-from model.model_vlm import MiniMindVLM
+from model.model_vlm import MiniMindVLM, get_vlm_arch_suffix
 
 
 def get_model_params(model, config, ignore_patterns=['vision_encoder']):
@@ -68,20 +68,20 @@ def init_vlm_model(vlm_config, from_weight='pretrain_vlm', tokenizer_path='../mo
     model = MiniMindVLM(vlm_config, vision_model_path=vision_model_path)
     
     if from_weight != 'none':
-        moe_suffix = '_moe' if vlm_config.use_moe else ''
-        weight_path = f'{save_dir}/{from_weight}_{vlm_config.hidden_size}{moe_suffix}.pth'
+        arch_suffix = get_vlm_arch_suffix(vlm_config)
+        weight_path = f'{save_dir}/{from_weight}_{vlm_config.hidden_size}{arch_suffix}.pth'
         weights = torch.load(weight_path, map_location=device)
         model.load_state_dict(weights, strict=False)
     
-    # 1、全部冻结，只打开vision_proj梯度
+    # 1、默认冻结所有参数，仅训练多模态桥接层
+    multimodal_keys = ('vision_proj', 'qformer', 'text_cross_attn_layers')
     for name, param in model.named_parameters():
-        if 'vision_proj' not in name:
-            param.requires_grad = False
+        param.requires_grad = any(key in name for key in multimodal_keys)
 
     # 2、判断策略
     if freeze_llm == 0:
         for name, param in model.named_parameters():
-            if 'vision_model' not in name:
+            if 'vision_encoder' not in name:
                 param.requires_grad = True
     elif freeze_llm == 1:
         for name, param in model.model.named_parameters():
@@ -98,9 +98,9 @@ def init_vlm_model(vlm_config, from_weight='pretrain_vlm', tokenizer_path='../mo
 
 def vlm_checkpoint(vlm_config, weight='pretrain_vlm', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir='../checkpoints', **kwargs):
     os.makedirs(save_dir, exist_ok=True)
-    moe_path = '_moe' if vlm_config.use_moe else ''
-    ckp_path = f'{save_dir}/{weight}_{vlm_config.hidden_size}{moe_path}.pth'
-    resume_path = f'{save_dir}/{weight}_{vlm_config.hidden_size}{moe_path}_resume.pth'
+    arch_suffix = get_vlm_arch_suffix(vlm_config)
+    ckp_path = f'{save_dir}/{weight}_{vlm_config.hidden_size}{arch_suffix}.pth'
+    resume_path = f'{save_dir}/{weight}_{vlm_config.hidden_size}{arch_suffix}_resume.pth'
     
     if model is not None:
         raw_model = model.module if isinstance(model, DistributedDataParallel) else model
@@ -189,4 +189,3 @@ class SkipBatchSampler(Sampler):
     def __len__(self):
         total_batches = (len(self.sampler) + self.batch_size - 1) // self.batch_size
         return max(0, total_batches - self.skip_batches)
-

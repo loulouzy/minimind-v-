@@ -6,17 +6,35 @@ import torch
 import random
 from PIL import Image
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
-from model.model_vlm import MiniMindVLM, VLMConfig
+from model.model_vlm import MiniMindVLM, VLMConfig, get_vlm_arch_suffix
 from trainer.trainer_utils import setup_seed, get_model_params
 warnings.filterwarnings('ignore')
 
 def init_model(args):
     tokenizer = AutoTokenizer.from_pretrained(args.load_from)
     if 'model' in args.load_from:
-        moe_suffix = '_moe' if args.use_moe else ''
-        ckp = f'./{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth'
+        arch_suffix = get_vlm_arch_suffix(
+            VLMConfig(
+                hidden_size=args.hidden_size,
+                num_hidden_layers=args.num_hidden_layers,
+                use_moe=bool(args.use_moe),
+                vision_fusion_type=args.vision_fusion_type,
+                qformer_num_queries=args.qformer_num_queries,
+                qformer_num_layers=args.qformer_num_layers,
+                text_cross_attn_every_n_layers=args.text_cross_attn_every_n_layers,
+            )
+        )
+        ckp = f'./{args.save_dir}/{args.weight}_{args.hidden_size}{arch_suffix}.pth'
         model = MiniMindVLM(
-            VLMConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe)),
+            VLMConfig(
+                hidden_size=args.hidden_size,
+                num_hidden_layers=args.num_hidden_layers,
+                use_moe=bool(args.use_moe),
+                vision_fusion_type=args.vision_fusion_type,
+                qformer_num_queries=args.qformer_num_queries,
+                qformer_num_layers=args.qformer_num_layers,
+                text_cross_attn_every_n_layers=args.text_cross_attn_every_n_layers,
+            ),
             vision_model_path="./model/siglip2-base-p16-ve"
         )
         state_dict = torch.load(ckp, map_location=args.device)
@@ -37,6 +55,10 @@ def main():
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
+    parser.add_argument('--vision_fusion_type', default='replace', type=str, choices=['replace', 'qformer_cross_attn'], help="视觉融合方式")
+    parser.add_argument('--qformer_num_queries', default=32, type=int, help="Q-Former query 数量")
+    parser.add_argument('--qformer_num_layers', default=2, type=int, help="Q-Former 层数")
+    parser.add_argument('--text_cross_attn_every_n_layers', default=1, type=int, help="每隔多少层插入一次 text cross-attention")
     parser.add_argument('--max_new_tokens', default=512, type=int, help="最大生成长度")
     parser.add_argument('--temperature', default=0.9, type=float, help="生成温度，控制随机性（0-1，越大越随机）")
     parser.add_argument('--top_p', default=0.9, type=float, help="nucleus采样阈值（0-1）")
@@ -61,9 +83,10 @@ def main():
             messages = [{"role": "user", "content": prompt.replace('<image>', model.config.image_special_token * model.config.image_token_len)}]
             inputs_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, open_thinking=bool(args.open_thinking))
             inputs = tokenizer(inputs_text, return_tensors="pt", truncation=True).to(args.device)
+            escaped_prompt = prompt.replace('\n', '\\n')
             
             print(f'[图像]: {image_file}')
-            print(f'💬: {prompt.replace('\n', '\\n')}')
+            print(f"💬: {escaped_prompt}")
             print('🤖: ', end='')
             st = time.time()
             generated_ids = model.generate(
