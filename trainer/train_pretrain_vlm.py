@@ -193,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=360, type=int, help="训练的最大截断长度")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
-    parser.add_argument('--vision_fusion_type', default='replace', type=str, choices=['replace', 'qformer_cross_attn'], help="视觉融合方式")
+    parser.add_argument('--vision_fusion_type', default='qformer_cross_attn', type=str, choices=['replace', 'qformer_cross_attn'], help="视觉融合方式")
     parser.add_argument('--qformer_num_queries', default=32, type=int, help="Q-Former query 数量")
     parser.add_argument('--qformer_num_layers', default=2, type=int, help="Q-Former 层数")
     parser.add_argument('--text_cross_attn_every_n_layers', default=1, type=int, help="每隔多少层插入一次 text cross-attention")

@@ -1,6 +1,6 @@
 # MiniMind-V 魔改记录
 
-更新时间：2026-04-03
+更新时间：2026-04-05
 
 ## 原项目与作者
 
@@ -101,6 +101,37 @@ python eval_vlm.py ^
   --qformer_num_layers 2 ^
   --text_cross_attn_every_n_layers 1
 ```
+
+## 实验对比结果
+
+在同一 held-out 验证集上，使用 [scripts/compare_fusion_modes.py](/e:/VLM_LLM/from-minimind-to-more-main/minimind-v/scripts/compare_fusion_modes.py) 对 `replace` 和 `qformer_cross_attn` 两种视觉接入方式做了对比。主指标为 **每个有效目标 token 的平均负对数似然 NLL**，辅助指标包括 `PPL`、吞吐、显存峰值和参数量。
+
+实验结果如下：
+
+| mode | NLL | PPL | tok/s | peak memory | total params | trainable params |
+|---|---:|---:|---:|---:|---:|---:|
+| replace | 1.9922 | 7.33 | 57945.6 | 0.94 GB | 159.79M | 66.86M |
+| qformer_cross_attn | 1.7789 | 5.92 | 51607.5 | 1.14 GB | 199.98M | 107.05M |
+
+Delta：
+
+- `NLL delta (qformer_cross_attn - replace) = -0.2133`
+- `PPL ratio = 0.808`
+- `Throughput ratio = 0.891`
+- `Peak memory delta = +0.20 GB`
+
+分析：
+
+- `qformer_cross_attn` 的 `NLL` 从 `1.9922` 降到 `1.7789`，相对下降约 `10.7%`，说明在 held-out 集上的条件建模能力更强。
+- `PPL` 从 `7.33` 降到 `5.92`，相对下降约 `19.2%`，这不是边缘提升，而是比较明确的效果收益。
+- 成本方面，`qformer_cross_attn` 的吞吐下降约 `10.9%`，显存增加 `0.20 GB`，总参数与可训练参数也明显高于 `replace`。
+- 从这组实验看，`qformer_cross_attn` 用中等幅度的额外计算与显存成本，换来了较明显的验证集收益，当前是更优的视觉接入方案。
+
+当前结论：
+
+- 如果优先追求效果，优先使用 `qformer_cross_attn`
+- 如果更看重训练速度、显存占用和部署成本，`replace` 仍然是更轻量的备选方案
+- 更稳妥的结论还需要补多随机种子或更多下游任务结果，但这次实验已经足以说明 `qformer_cross_attn` 在当前任务分布下具备明显优势
 
 ## 说明
 
