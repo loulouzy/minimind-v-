@@ -14,6 +14,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import Sampler
 from transformers import AutoTokenizer
 from model.model_vlm import MiniMindVLM, get_vlm_arch_suffix
+from model.model_omni import MiniMindOmni, get_omni_arch_suffix
 
 
 def get_model_params(model, config, ignore_patterns=['vision_encoder']):
@@ -96,6 +97,36 @@ def init_vlm_model(vlm_config, from_weight='pretrain_vlm', tokenizer_path='../mo
     return model.to(device), tokenizer, preprocess
 
 
+def init_omni_model(omni_config, from_weight='sft_vlm', tokenizer_path='../model', vision_model_path='../model/siglip2-base-p16-ve', audio_model_path='../model/whisper-base', save_dir='../out', device='cuda', freeze_llm=0):
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    model = MiniMindOmni(omni_config, vision_model_path=vision_model_path, audio_model_path=audio_model_path)
+
+    if from_weight != 'none':
+        arch_suffix = get_omni_arch_suffix(omni_config)
+        weight_path = f'{save_dir}/{from_weight}_{omni_config.hidden_size}{arch_suffix}.pth'
+        weights = torch.load(weight_path, map_location=device)
+        model.load_state_dict(weights, strict=False)
+
+    multimodal_keys = ('vision_proj', 'audio_proj', 'image_qformer', 'audio_qformer', 'text_cross_attn_layers')
+    for name, param in model.named_parameters():
+        param.requires_grad = any(key in name for key in multimodal_keys)
+
+    if freeze_llm == 0:
+        for name, param in model.named_parameters():
+            if 'vision_encoder' not in name and 'audio_encoder' not in name:
+                param.requires_grad = True
+    elif freeze_llm == 1:
+        for name, param in model.model.named_parameters():
+            if 'layers.0.' in name:
+                param.requires_grad = True
+    elif freeze_llm == 2:
+        pass
+
+    get_model_params(model, omni_config, ignore_patterns=['vision_encoder', 'audio_encoder'])
+    Logger(f'Trainable Params: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f}M')
+    return model.to(device), tokenizer, model.image_processor, model.audio_processor
+
+
 def vlm_checkpoint(vlm_config, weight='pretrain_vlm', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir='../checkpoints', **kwargs):
     os.makedirs(save_dir, exist_ok=True)
     arch_suffix = get_vlm_arch_suffix(vlm_config)
@@ -154,6 +185,66 @@ def vlm_checkpoint(vlm_config, weight='pretrain_vlm', model=None, optimizer=None
         return None
 
 
+def omni_checkpoint(omni_config, weight='pretrain_omni', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir='../checkpoints', **kwargs):
+    os.makedirs(save_dir, exist_ok=True)
+    arch_suffix = get_omni_arch_suffix(omni_config)
+    ckp_path = f'{save_dir}/{weight}_{omni_config.hidden_size}{arch_suffix}.pth'
+    resume_path = f'{save_dir}/{weight}_{omni_config.hidden_size}{arch_suffix}_resume.pth'
+
+    if model is not None:
+        raw_model = model.module if isinstance(model, DistributedDataParallel) else model
+        raw_model = getattr(raw_model, '_orig_mod', raw_model)
+        state_dict = raw_model.state_dict()
+        clean_state_dict = {
+            k: v for k, v in state_dict.items()
+            if not k.startswith('vision_encoder.') and not k.startswith('audio_encoder.')
+        }
+        ckp_tmp = ckp_path + '.tmp'
+        torch.save({k: v.half().cpu() for k, v in clean_state_dict.items()}, ckp_tmp)
+        os.replace(ckp_tmp, ckp_path)
+
+        wandb_id = None
+        if wandb:
+            if hasattr(wandb, 'get_run'):
+                run = wandb.get_run()
+                wandb_id = getattr(run, 'id', None) if run else None
+            else:
+                wandb_id = getattr(wandb, 'id', None)
+
+        resume_data = {
+            'model': state_dict,
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch,
+            'step': step,
+            'world_size': dist.get_world_size() if dist.is_initialized() else 1,
+            'wandb_id': wandb_id
+        }
+        for key, value in kwargs.items():
+            if value is not None:
+                if hasattr(value, 'state_dict'):
+                    raw_value = value.module if isinstance(value, DistributedDataParallel) else value
+                    raw_value = getattr(raw_value, '_orig_mod', raw_value)
+                    resume_data[key] = raw_value.state_dict()
+                else:
+                    resume_data[key] = value
+
+        resume_tmp = resume_path + '.tmp'
+        torch.save(resume_data, resume_tmp)
+        os.replace(resume_tmp, resume_path)
+        del state_dict, clean_state_dict, resume_data
+        torch.cuda.empty_cache()
+    else:
+        if os.path.exists(resume_path):
+            ckp_data = torch.load(resume_path, map_location='cpu')
+            saved_ws = ckp_data.get('world_size', 1)
+            current_ws = dist.get_world_size() if dist.is_initialized() else 1
+            if saved_ws != current_ws:
+                ckp_data['step'] = ckp_data['step'] * saved_ws // current_ws
+                Logger(f'GPU数量变化({saved_ws}→{current_ws})，step已自动转换为{ckp_data["step"]}')
+            return ckp_data
+        return None
+
+
 def vlm_collate_fn(batch):
     input_ids = torch.stack([b[0] for b in batch])
     labels = torch.stack([b[1] for b in batch])
@@ -163,6 +254,26 @@ def vlm_collate_fn(batch):
     else:
         pixel_values = torch.stack(pixel_data)
     return input_ids, labels, pixel_values
+
+
+def omni_collate_fn(batch):
+    input_ids = torch.stack([b[0] for b in batch])
+    labels = torch.stack([b[1] for b in batch])
+    image_items = [b[2] for b in batch]
+    audio_items = [b[3] for b in batch]
+
+    def collate_optional(items):
+        if all(item is None for item in items):
+            return None
+        if any(item is None for item in items):
+            raise ValueError('A batch mixes present and missing modalities. Use homogeneous datasets or separate dataloaders.')
+        if hasattr(items[0], 'keys'):
+            return {k: torch.stack([item[k] for item in items]) for k in items[0].keys()}
+        return torch.stack(items)
+
+    image_values = collate_optional(image_items)
+    audio_values = collate_optional(audio_items)
+    return input_ids, labels, image_values, audio_values
 
 
 class SkipBatchSampler(Sampler):

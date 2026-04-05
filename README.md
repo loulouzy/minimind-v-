@@ -133,6 +133,104 @@ Delta：
 - 如果更看重训练速度、显存占用和部署成本，`replace` 仍然是更轻量的备选方案
 - 更稳妥的结论还需要补多随机种子或更多下游任务结果，但这次实验已经足以说明 `qformer_cross_attn` 在当前任务分布下具备明显优势
 
+## MiniMind-Omni
+
+在现有视觉分支之外，项目已新增一个独立的 Omni 分支：
+
+- 模型文件：`model/model_omni.py`
+- 数据集：`dataset/omni_dataset.py`
+- 训练脚本：`trainer/train_pretrain_omni.py`、`trainer/train_sft_omni.py`
+
+当前 Omni 设计：
+
+1. 图像编码器继续使用 `SigLIP2`
+2. 音频编码器使用 `Whisper`（默认路径 `./model/whisper-base`）
+3. 图像和音频都支持两种接入方式：
+   - `fusion_type=replace`
+   - `fusion_type=qformer_cross_attn`
+4. 在 `qformer_cross_attn` 模式下，图像和音频的 Q-Former 输出会拼接为统一的多模态上下文，再供文本 cross-attention 读取
+
+### Omni 数据格式
+
+`trainer/train_*_omni.py` 读取 parquet，最少需要：
+
+- `conversations`
+- `image_bytes` 可选
+- `audio_bytes` 可选
+
+文本中占位符规则：
+
+- 图像：`<image>`
+- 音频：`<audio>`
+
+对应 tokenizer 中的特殊 token：
+
+- `image_token = <|image_pad|>`
+- `audio_token = <|audio_pad|>`
+
+当前实现约束：
+
+- 一个 batch 内不要混合“有图/无图”或“有音频/无音频”的样本
+- 最稳妥的做法是按数据源分别构建 parquet，然后分阶段训练
+
+### Omni 使用示例
+
+音频桥接预训练：
+
+```bash
+python trainer/train_pretrain_omni.py ^
+  --data_path ../dataset/audiocaps_pretrain.parquet ^
+  --from_weight sft_vlm ^
+  --fusion_type qformer_cross_attn ^
+  --freeze_llm 1 ^
+  --audio_model_path ../model/whisper-base
+```
+
+音频/Omni 指令微调：
+
+```bash
+python trainer/train_sft_omni.py ^
+  --data_path ../dataset/audiocaps_sft.parquet ^
+  --from_weight pretrain_omni ^
+  --fusion_type qformer_cross_attn ^
+  --freeze_llm 0 ^
+  --audio_model_path ../model/whisper-base
+```
+
+### 推荐训练顺序
+
+推荐 **先视觉，后音频，再联合**，而不是直接从零联合训练。
+
+建议流程：
+
+1. 先完成当前视觉模型训练，得到较稳定的 `sft_vlm` 或 `sft_vlm_qformer`
+2. 使用 `MiniMind-Omni` 从该视觉权重初始化，只训练音频桥接层和少量 LLM 层，完成音频预训练
+3. 再做音频指令微调，学习转写、音频描述、音频问答等能力
+4. 最后再用少量联合数据做 Omni 对齐，避免音频分支破坏已有视觉能力
+
+不建议一上来全模态联合训练，原因是：
+
+- 音频分支是新接入的，初期梯度会明显更不稳定
+- 图像能力已经收敛，直接联合训练更容易出现对旧能力的干扰
+- 先单独把音频桥接训练好，再做联合对齐，通常更省算力也更稳
+
+### 可用于训练的音频数据方向
+
+建议按三层目标组织数据：
+
+1. 音频描述/环境声音理解
+   - 例如 AudioCaps、Clotho、WavCaps
+2. 语音识别/语音转文本
+   - 例如 LibriSpeech、Common Voice
+3. 音频问答或音视频联合理解
+   - 例如 AVQA 等音视频问答数据
+
+一个实用配方是：
+
+- Pretrain：音频描述 + ASR 混合
+- SFT：音频指令问答/描述/转写
+- Joint alignment：少量图像指令数据 + 少量音频指令数据 + 少量音视频联合数据
+
 ## 说明
 
 - 这次改动是“新增可选分支”，不是覆盖原实现。
